@@ -46,8 +46,9 @@ PDF_FUNCTIONS = {"nspire": "CalcSuite - TI-Nspire CX II functions reference.pdf"
 
 
 # ---- The icon strip: one button per section, against the window's right edge ----
-# Each icon is drawn on a 24 x 24 grid with plain Canvas lines (our own drawings, MIT like the
-# rest): ("line", points), ("ring", box), ("dot", box), ("text", x, y, text, font)
+# Each icon is drawn on a 24 x 24 grid (our own drawings, MIT like the rest), rendered smooth
+# into an image at the screen's scale (icon_image): ("line", points), ("ring", box), ("dot", box),
+# ("text", x, y, text, font)
 ICONS = {
     "Files": [("line", (3, 7, 9, 7, 11, 9, 21, 9, 21, 19, 3, 19, 3, 7))],
     "Keys": [("line", (2, 7, 22, 7, 22, 18, 2, 18, 2, 7)),
@@ -66,48 +67,173 @@ ICONS = {
 }
 
 
-def draw_icon(c, name, x0, y0, colour):
+LINE_W = 1.7  # The icons' line width in grid units (pixels at 100%)
+_ICON_SS = 4  # Samples a pixel each way (16 a pixel): the blended edges
+_icon_masks = {}
+_icon_images = {}
+
+
+def ui_scale(widget):
+    """The screen's scale (1.0 at 96 dpi, 1.5 at 150%, 2.0 at 200%)"""
+    try:
+        return max(1.0, float(widget.winfo_fpixels("1i")) / 96.0)
+    except (tk.TclError, ValueError):
+        return 1.0
+
+
+def icon_size(scale):
+    return int(round(24 * scale))
+
+
+def _seg_cover(hit, n, ax, ay, bx, by, hw):
+    """Marks the samples within hw of the segment a-b (sample units; round ends and joins)"""
+    dx, dy = bx - ax, by - ay
+    ll = dx * dx + dy * dy
+    x0, x1 = max(0, int(min(ax, bx) - hw - 1)), min(n - 1, int(max(ax, bx) + hw + 1))
+    y0, y1 = max(0, int(min(ay, by) - hw - 1)), min(n - 1, int(max(ay, by) + hw + 1))
+    hw2 = hw * hw
+    for y in range(y0, y1 + 1):
+        py = y + 0.5
+        row = y * n
+        for x in range(x0, x1 + 1):
+            px = x + 0.5
+            if ll:
+                t = ((px - ax) * dx + (py - ay) * dy) / ll
+                t = 0.0 if t < 0 else 1.0 if t > 1 else t
+                ex, ey = px - ax - t * dx, py - ay - t * dy
+            else:
+                ex, ey = px - ax, py - ay
+            if ex * ex + ey * ey <= hw2:
+                hit[row + x] = 1
+
+
+def _ring_cover(hit, n, cx, cy, r, hw, fill):
+    lo = 0.0 if fill else max(0.0, r - hw)
+    hi = r if fill else r + hw
+    lo2, hi2 = lo * lo, hi * hi
+    for y in range(max(0, int(cy - hi - 1)), min(n - 1, int(cy + hi + 1)) + 1):
+        py = y + 0.5 - cy
+        row = y * n
+        for x in range(max(0, int(cx - hi - 1)), min(n - 1, int(cx + hi + 1)) + 1):
+            px = x + 0.5 - cx
+            d2 = px * px + py * py
+            if lo2 <= d2 <= hi2:
+                hit[row + x] = 1
+
+
+def icon_mask(name, scale):
+    """The icon's coverage, a pixel's share 0..1 (a list, row by row, icon_size(scale) square):
+    its lines, rings and dots (ICONS) drawn with blended edges. None: nothing to draw as an
+    image (an unknown name, or text only: Tk draws text smooth itself). Kept per name and scale."""
+    key = (name, scale)
+    if key in _icon_masks:
+        return _icon_masks[key]
+    parts = [p for p in ICONS.get(name, []) if p[0] != "text"]
+    if not parts:
+        _icon_masks[key] = None
+        return None
+    size, ss = icon_size(scale), _ICON_SS
+    n = size * ss
+    f = n / 24.0  # Samples per grid unit
+    # Lines a whole number of pixels wide, centred so they fill whole pixels where they run
+    # straight (an even width on the grid lines, an odd one half a pixel over): crisp, not two
+    # half-lit pixels
+    wide = max(1, int(round(LINE_W * scale)))
+    hw = wide * ss / 2.0
+    shift = ss / 2.0 if wide % 2 else 0.0
+    hit = bytearray(n * n)
+    for part in parts:
+        if part[0] == "line":
+            pts = [v * f + shift for v in part[1]]
+            for k in range(0, len(pts) - 2, 2):
+                _seg_cover(hit, n, pts[k], pts[k + 1], pts[k + 2], pts[k + 3], hw)
+        else:
+            a, b, c, d = [v * f + shift for v in part[1]]
+            _ring_cover(hit, n, (a + c) / 2, (b + d) / 2, (c - a) / 2, hw, part[0] == "dot")
+    cover = []
+    full = float(ss * ss)
+    for y in range(size):
+        for x in range(size):
+            s = 0
+            for sy in range(ss):
+                base = (y * ss + sy) * n + x * ss
+                s += sum(hit[base:base + ss])
+            cover.append(s / full)
+    _icon_masks[key] = cover
+    return cover
+
+
+def icon_image(widget, name, colour, bg, scale):
+    """The icon in colour on bg as a PhotoImage (no Pillow), or None (see icon_mask)"""
+    key = (name, colour, bg, scale)
+    img = _icon_images.get(key)
+    if img is not None:
+        return img
+    cover = icon_mask(name, scale)
+    if cover is None:
+        return None
+    size = icon_size(scale)
+    fc, bc = th._rgb(colour), th._rgb(bg)
+    shades = {}
+    rows = []
+    for y in range(size):
+        row = []
+        for a in cover[y * size:(y + 1) * size]:
+            hexed = shades.get(a)
+            if hexed is None:
+                hexed = shades[a] = "#%02x%02x%02x" % tuple(
+                    int(round(fv * a + bv * (1 - a))) for fv, bv in zip(fc, bc))
+            row.append(hexed)
+        rows.append("{" + " ".join(row) + "}")
+    img = tk.PhotoImage(master=widget, width=size, height=size)
+    img.put(" ".join(rows))
+    _icon_images[key] = img
+    return img
+
+
+def draw_icon(c, name, x0, y0, colour, scale=1.0, bg=None):
+    """The icon at (x0, y0) of canvas c: its lines, rings and dots as one smooth image (tag
+    "icon"), its text as Canvas text (tag "ink"); scale: the screen's (ui_scale)"""
+    img = icon_image(c, name, colour, bg or str(c.cget("bg")), scale)
+    if img is not None:
+        c.create_image(x0, y0, image=img, anchor="nw", tags=("icon",))
     for part in ICONS.get(name, []):
-        kind = part[0]
-        if kind == "line":
-            pts = [v + (x0 if k % 2 == 0 else y0) for k, v in enumerate(part[1])]
-            c.create_line(*pts, fill=colour, width=1.7, capstyle="round", joinstyle="round", tags=("ink",))
-        elif kind == "ring":
-            a, b, cc, d = part[1]
-            c.create_oval(a + x0, b + y0, cc + x0, d + y0, outline=colour, width=1.7, tags=("ink", "ring"))
-        elif kind == "dot":
-            a, b, cc, d = part[1]
-            c.create_oval(a + x0, b + y0, cc + x0, d + y0, outline=colour, fill=colour, tags=("ink", "dot"))
-        elif kind == "text":
-            c.create_text(part[1] + x0, part[2] + y0, text=part[3], font=part[4], fill=colour, tags=("ink",))
+        if part[0] == "text":
+            c.create_text(x0 + part[1] * scale, y0 + part[2] * scale, text=part[3], font=part[4],
+                          fill=colour, tags=("ink",))
 
 
 class IconStrip(object):
     """A vertical strip of section buttons: an icon and a short label under it. The picked one
     is in the accent colour on PANEL2 with a 2 px accent bar on its right edge; the others DIM.
-    on_pick(name) when one is clicked; the tooltip gives the full name."""
+    on_pick(name) when one is clicked; the tooltip gives the full name. The icons are smooth
+    images drawn for the screen's scale (crisp at 100%, 150%, 200%)."""
 
     ITEM_H = 56
 
     def __init__(self, parent, names, on_pick, labels=None, full=None):
-        self.frame = tk.Frame(parent, bg=th.PANEL, width=STRIP_W)
+        self.scale = s = ui_scale(parent)
+        self.width = w = int(round(STRIP_W * s))
+        h = int(round(self.ITEM_H * s))
+        bar = max(2, int(round(2 * s)))
+        self.frame = tk.Frame(parent, bg=th.PANEL, width=w)
         self.items = {}
         self.current = None
         self.hover = None
-        tk.Frame(self.frame, bg=th.PANEL, height=6).pack(side="top")
+        tk.Frame(self.frame, bg=th.PANEL, height=int(round(6 * s))).pack(side="top")
         for name in names:
-            c = tk.Canvas(self.frame, width=STRIP_W, height=self.ITEM_H, bg=th.PANEL,
+            c = tk.Canvas(self.frame, width=w, height=h, bg=th.PANEL,
                           highlightthickness=0, bd=0, cursor="hand2")
             c.pack(side="top")
-            draw_icon(c, name, (STRIP_W - 24) // 2, 7, th.DIM)
-            c.create_text(STRIP_W // 2, 43, text=(labels or {}).get(name, name), font=th.SMALL,
+            draw_icon(c, name, (w - icon_size(s)) // 2, int(round(7 * s)), th.DIM, s, th.PANEL)
+            c.create_text(w // 2, int(round(43 * s)), text=(labels or {}).get(name, name), font=th.SMALL,
                           fill=th.DIM, tags=("ink",))
-            c.create_rectangle(STRIP_W - 2, 0, STRIP_W, self.ITEM_H, fill=th.PANEL, outline="",
-                               tags=("bar",))
+            c.create_rectangle(w - bar, 0, w, h, fill=th.PANEL, outline="", tags=("bar",))
             c.bind("<Button-1>", lambda e, n=name: on_pick(n))
             c.bind("<Enter>", lambda e, n=name: self.hovered(n))
             c.bind("<Leave>", lambda e, n=name: self.hovered(None))
             th.Tooltip(c, (full or {}).get(name, name))
+            c.icon_name = name
             self.items[name] = c
 
     def hovered(self, name):
@@ -129,14 +255,10 @@ class IconStrip(object):
         bg = th.PANEL2 if sel else th.PANEL
         c.configure(bg=bg)
         c.itemconfigure("bar", fill=th.ACCENT if sel else bg)
-        for i in c.find_withtag("ink"):
-            kind = c.type(i)
-            if kind in ("line", "text"):
-                c.itemconfigure(i, fill=colour)
-            else:
-                c.itemconfigure(i, outline=colour)
-                if "dot" in c.gettags(i):
-                    c.itemconfigure(i, fill=colour)
+        img = icon_image(c, name, colour, bg, self.scale)
+        if img is not None:
+            c.itemconfigure("icon", image=img)
+        c.itemconfigure("ink", fill=colour)
 
 
 def panel_frame(parent, names, on_pick, labels=None, full=None):

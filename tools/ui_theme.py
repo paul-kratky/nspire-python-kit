@@ -171,10 +171,11 @@ def set_dot(lab, state=None, bg=None):
 
 
 class Tooltip(object):
-    """A small dark tip beside a widget while the mouse rests on it"""
+    """A small dark tip beside a widget while the mouse rests on it (below it: below=True);
+    no text, no tip (the text may change later)"""
 
-    def __init__(self, widget, text, delay=450):
-        self.w, self.text, self.delay = widget, text, delay
+    def __init__(self, widget, text, delay=450, below=False):
+        self.w, self.text, self.delay, self.below = widget, text, delay, below
         self.job = self.tip = None
         widget.bind("<Enter>", self.enter, add="+")
         widget.bind("<Leave>", self.leave, add="+")
@@ -207,11 +208,15 @@ class Tooltip(object):
             tk.Label(t, text=self.text, bg=PANEL2, fg=FG, font=HINT, padx=8, pady=3,
                      highlightthickness=1, highlightbackground=LINE).pack()
             t.update_idletasks()
-            # Left of it: the side panel's strip is against the window's right edge
-            x = self.w.winfo_rootx() - t.winfo_reqwidth() - 6
-            if x < 0:
-                x = self.w.winfo_rootx() + self.w.winfo_width() + 6
-            y = self.w.winfo_rooty() + (self.w.winfo_height() - t.winfo_reqheight()) // 2
+            if self.below:  # A tab of the strip at the window's top
+                x = self.w.winfo_rootx()
+                y = self.w.winfo_rooty() + self.w.winfo_height() + 4
+            else:
+                # Left of it: the side panel's strip is against the window's right edge
+                x = self.w.winfo_rootx() - t.winfo_reqwidth() - 6
+                if x < 0:
+                    x = self.w.winfo_rootx() + self.w.winfo_width() + 6
+                y = self.w.winfo_rooty() + (self.w.winfo_height() - t.winfo_reqheight()) // 2
             t.geometry("+%d+%d" % (x, y))
             t.deiconify()
         except tk.TclError:

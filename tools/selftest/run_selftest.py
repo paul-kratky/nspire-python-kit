@@ -233,6 +233,8 @@ def main():
     failures += picture_checks.main()
     import data_checks  # Data bridge: TI numbers, lists, matrices, the grid, Copy answer (faked link)
     failures += data_checks.main()
+    import chrome_checks  # The window: screen size, tab titles, dragging tabs, smooth strip icons, app icon
+    failures += chrome_checks.main()
     print("\n%s" %("ALL PASSED" if not failures else "%d FAILURE(S)" % failures))
     return 1 if failures else 0
 

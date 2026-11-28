@@ -64,6 +64,11 @@ while it has unsaved changes; **✕** closes it (asking first if there's somethi
 backups, Get all, a program's text, Restore, the macro editor and Test in PC copy. **Open in its
 own window** works for them as well. File pickers and yes/no questions stay small dialogs.
 
+**Arrange the tabs:** drag a tab left or right to move it (an orange bar shows where it lands;
+All screens stays first). CalcSuite remembers the order for next time. A long title is
+shortened ("Compare: TI-84 Plus CE"); rest the mouse on the tab for the full one. When the tabs
+don't all fit, the strip shows **‹ ›** to scroll (or turn the mouse wheel over the tabs).
+
 **A calculator's tab** shows its screen big, with **Screenshot**, **Record**, **Send
 program...** and **Copy answer** under it, then your pinned macros, and **More ▾** with the rest
 (**Copy screen**, **Paste text**, **Reconnect**, **Program editor...**, **Make a picture...**,
@@ -72,8 +77,10 @@ program...** and **Copy answer** under it, then your pinned macros, and **More �
 under the screen; **Show keys in recordings** puts that strip into your GIF and MP4 too.
 **Open in its own window** (top right) pops the calculator out into a window of its own;
 closing that window puts it back as a tab. A calculator that's unplugged greys out ("not
-plugged in") and comes back when you plug it in again. The side panel starts at about half the
-window and keeps that share when the window changes size; drag the thin handle between the
+plugged in") and comes back when you plug it in again. The screen is drawn as big as its side
+allows, with a small margin (a whole number of times when that fills most of it, for crisp
+pixels). The side panel starts at about half the window (narrower when that lets the screen be
+bigger) and keeps that share when the window changes size; drag the thin handle between the
 screen and the panel to make it wider or narrower (double-click it: back to half), and in
 **Functions**, drag the one under the list.
 

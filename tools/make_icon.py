@@ -3,7 +3,11 @@
     python -I tools/make_icon.py      (needs Pillow; only for whoever changes the icon)
 
 Writes assets/app.ico (16 to 256 px, each size drawn on its own so small ones stay sharp) and
-assets/app.png (256 px, the window's icon). Drawn on a 128-unit grid, like the design canvas.
+assets/app.png (256 px, the window's icon). 40 px and up are drawn on a 128-unit grid, like the
+design canvas. 16, 20, 24 and 32 px (the title bar, the taskbar, Explorer's lists) are laid out
+by hand in whole pixels: every edge on the pixel grid (only the rounded corners are blended, so
+nothing is fuzzy) and every part at least a pixel inside the tile (at 16-24 px the scaled
+calculator ran into the tile's rounded corner and looked cut off).
 """
 
 import os
@@ -19,8 +23,45 @@ CALC = (255, 122, 61, 255)     # #ff7a3d
 SIZES = (16, 20, 24, 32, 40, 48, 64, 128, 256)
 SS = 8                         # Supersampling
 
+# The small sizes in their own pixels: (x0, y0, x1, y1, corner radius) with x1/y1 just past
+# the last pixel, and the monitor's line width. The same design as the 128-unit grid below.
+SMALL = {
+    16: dict(tile=(1, 1, 15, 15, 3), monitor=(2, 3, 11, 10, 0.75), stroke=1,
+             calc=(7, 5, 13, 13, 1), screen=None),
+    20: dict(tile=(1, 1, 19, 19, 3.5), monitor=(3, 4, 13, 12, 1), stroke=2,
+             calc=(9, 7, 16, 17, 1.5), screen=None),
+    24: dict(tile=(1, 1, 23, 23, 5), monitor=(3, 4, 16, 14, 1), stroke=2,
+             calc=(11, 8, 20, 21, 2), screen=(12, 10, 19, 14, 0.5)),
+    32: dict(tile=(1, 1, 31, 31, 7), monitor=(4, 6, 21, 18, 1.5), stroke=2,
+             calc=(15, 10, 27, 28, 2.5), screen=(17, 12, 25, 18, 1)),
+}
+
+
+def draw_small(size):
+    """A hand-laid small size: drawn 8x on whole pixels, then box-averaged (no ringing)"""
+    g = SMALL[size]
+    im = Image.new("RGBA", (size * SS, size * SS), (0, 0, 0, 0))
+    d = ImageDraw.Draw(im)
+
+    def box(part):
+        x0, y0, x1, y1, r = part
+        return [x0 * SS, y0 * SS, x1 * SS - 1, y1 * SS - 1], r * SS
+
+    b, r = box(g["tile"])
+    d.rounded_rectangle(b, radius=r, fill=TILE)
+    b, r = box(g["monitor"])
+    d.rounded_rectangle(b, radius=r, outline=MONITOR, width=g["stroke"] * SS)
+    b, r = box(g["calc"])
+    d.rounded_rectangle(b, radius=r, fill=CALC)
+    if g["screen"]:
+        b, r = box(g["screen"])
+        d.rounded_rectangle(b, radius=r, fill=TILE)  # Its screen
+    return im.reduce(SS)
+
 
 def draw(size):
+    if size in SMALL:
+        return draw_small(size)
     big = size * SS
     k = big / 128.0
     im = Image.new("RGBA", (big, big), (0, 0, 0, 0))
@@ -29,16 +70,11 @@ def draw(size):
     def box(x, y, w, h):
         return [x * k, y * k, (x + w) * k, (y + h) * k]
 
-    d.rounded_rectangle(box(6, 6, 116, 116), radius=(22 if size <= 20 else 26) * k, fill=TILE)
-    stroke = 6 if size >= 48 else 8 if size >= 24 else 12
+    d.rounded_rectangle(box(6, 6, 116, 116), radius=26 * k, fill=TILE)
+    stroke = 6 if size >= 48 else 8
     d.rounded_rectangle(box(18, 24, 66, 48), radius=6 * k, outline=MONITOR, width=max(1, round(stroke * k)))
-    if size <= 24:  # Small: the calculator kept clear of the tile's rounded corner (it read as cut off)
-        d.rounded_rectangle(box(56, 38, 46, 66), radius=8 * k, fill=CALC)
-        if size == 24:
-            d.rounded_rectangle(box(63, 46, 32, 20), radius=3 * k, fill=TILE)  # Its screen
-    else:
-        d.rounded_rectangle(box(60, 42, 48, 70), radius=9 * k, fill=CALC)
-        d.rounded_rectangle(box(67, 50, 34, 22), radius=3 * k, fill=TILE)  # Its screen
+    d.rounded_rectangle(box(60, 42, 48, 70), radius=9 * k, fill=CALC)
+    d.rounded_rectangle(box(67, 50, 34, 22), radius=3 * k, fill=TILE)  # Its screen
     if size >= 48:
         for cy in (84, 97):
             for cx in (74, 84, 94):

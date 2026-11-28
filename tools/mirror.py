@@ -33,6 +33,7 @@ import threading
 import time
 import tkinter as tk
 from tkinter import filedialog, messagebox
+from tkinter import font as tkfont
 
 # Run as the program (python tools/mirror.py, and CalcSuite.exe) this module is "__main__". The
 # panels' `import mirror` then loaded a second copy of it, which patched after() again with a
@@ -76,6 +77,7 @@ import key_strip  # noqa: E402
 import ui_theme as th  # noqa: E402
 from emu_tabs import is_emu_key  # noqa: E402
 import tool_tabs  # noqa: E402
+import window_chrome as wc  # noqa: E402
 
 import check_nspire  # noqa: E402
 import py2tns  # noqa: E402
@@ -976,7 +978,9 @@ MAX_KEYS_LINE = 200  # Key codes in one "keys" command: 7 bytes each, the helper
 
 
 class ScreenView(object):
-    """A calculator's picture in a Label, scaled by a whole number to fit its space"""
+    """A calculator's picture in a Label, as big as its space allows with an even margin round
+    it: a whole number of times when that fills most of it (crisp), else in half steps
+    (window_chrome.screen_scale)"""
 
     def __init__(self, parent, mirror, big, visible, fit, bg=th.BG):
         self.m = mirror
@@ -992,14 +996,7 @@ class ScreenView(object):
     def scale_for(self, w, h):
         """(zoom, subsample) for a w x h picture in the space fit() gives"""
         aw, ah = self.fit()
-        z = max(0, min(aw // max(1, w), ah // max(1, h)))
-        if self.big:
-            z = min(z, 6)
-        else:
-            z = min(z, 3)
-        if z >= 1:
-            return z, 1
-        return 1, 2
+        return wc.screen_scale(w, h, aw, ah, wc.SCREEN_MARGIN if self.big else wc.TILE_MARGIN)
 
     def show(self, img=None):
         img = img or self.m.image
@@ -1007,7 +1004,9 @@ class ScreenView(object):
             return
         w, h = img.width(), img.height()
         z, sub = self.scale_for(w, h)
-        shown = img.zoom(z, z) if z > 1 else (img.subsample(sub, sub) if sub > 1 else img)
+        shown = img.zoom(z, z) if z > 1 else img
+        if sub > 1:  # A half step (x 2.5 = x 5 then every other pixel) or smaller than itself
+            shown = shown.subsample(sub, sub)
         self.zoom = (z, sub)
         self.photo = shown
         self.source = img
@@ -1173,8 +1172,18 @@ class Tab(object):
         return lo, max(lo, self.tab_width() - 36 - keep)  # 36: the paddings and the handle
 
     def default_panel_width(self):
+        """A share of the window, but narrower (down to its narrowest) when that lets the
+        calculator's screen be drawn bigger: the screen gets the width it can use (a wide 89
+        screen in a tall window was a small picture in a big black box), the panel the rest"""
         lo, hi = self.panel_limits()
-        return max(lo, min(hi, int(round(self.tab_width() * self.PANEL_SHARE))))
+        share = max(lo, min(hi, int(round(self.tab_width() * self.PANEL_SHARE))))
+        h = self.screen_box.winfo_height()
+        if h <= 1:
+            return share
+        nw, nh = self.m.native or self.m.calc.native
+        most = self.tab_width() - 36 - lo  # The screen side's width with the panel at its narrowest
+        want = wc.screen_width_wanted(nw, nh, most, h)
+        return max(lo, min(share, self.tab_width() - 36 - want))
 
     def panel_width_now(self):
         """The width the panel should have now: the dragged one (within the limits), else the default"""
@@ -1546,6 +1555,17 @@ class App(object):
         # Writing programs needs no calculator: the editor is always one click away
         self.write_btn = th.button(strip, "Write a program", lambda: self.open_editor_tab(), bg=th.PANEL)
         self.write_btn.pack(side="right", pady=6, before=self.strip)
+        # Tabs that don't fit: a run of them with these to scroll; the marker while dragging one
+        self.tab_left = tk.Label(self.strip, text="‹", bg=th.PANEL, fg=th.FG, font=(th.FONT, 13),
+                                 padx=7, cursor="hand2")
+        self.tab_right = tk.Label(self.strip, text="›", bg=th.PANEL, fg=th.FG, font=(th.FONT, 13),
+                                  padx=7, cursor="hand2")
+        self.tab_left.bind("<Button-1>", lambda e: self.scroll_tabs(-1))
+        self.tab_right.bind("<Button-1>", lambda e: self.scroll_tabs(1))
+        self.drop_mark = tk.Frame(self.strip, bg=th.ACCENT, width=3)
+        self.tab_order = []   # The tabs' keys in the strip's order (drag a tab to move it)
+        self.tab_window = (0, 0)
+        self.saved_order = wc.load_order()  # Their names in the order the user dragged them to
         tk.Frame(self.root, bg=th.LINE, height=1).pack(fill="x")
         self.content = tk.Frame(self.root, bg=th.BG)
         self.content.pack(fill="both", expand=True)
@@ -1593,9 +1613,21 @@ class App(object):
         return [c.pid for c in CALCS].index(pid) if pid in [c.pid for c in CALCS] else 9
 
     # ---- The tab strip ----
+    TAB_MAX = 210  # A tab's title at most this wide (pixels at 100%); the full one in its tooltip
+    TAB_MIN = 120  # ...shrunk down to this when many tabs don't fit, before the strip scrolls
+    DRAG = 6       # Pixels the mouse moves with the button down before a click becomes a drag
+    tab_limit = TAB_MAX  # The titles' width now (fit_tabs lowers it when tabs don't fit)
+
+    def tab_name(self, key):
+        """A tab's name in the saved order: a calculator's slug, else its key ("editor",
+        "emu:ti84", "tool:compare:ti84"; a second copy's "#2" dropped)"""
+        for c in CALCS:
+            if c.pid == key:
+                return c.slug
+        return str(key).split("#")[0]
+
     def make_tab_button(self, key, text):
         f = tk.Frame(self.strip, bg=th.PANEL, cursor="hand2")
-        f.pack(side="left")
         inner = tk.Frame(f, bg=th.PANEL)
         inner.pack(padx=14, pady=(8, 6))
         dot = th.status_dot(inner)  # An antialiased dot (a Canvas oval is jagged this small)
@@ -1604,6 +1636,7 @@ class App(object):
             dot.pack(side="left", padx=(0, 7), pady=(1, 0))  # On the text's centre line
         name = tk.Label(inner, text=text, bg=th.PANEL, fg=th.FG, font=(th.FONT, 10, "bold"))
         name.pack(side="left")
+        shut = None
         if key == "editor" or is_emu_key(key) or tool:
             # The editor's tab closes (asking about unsaved changes first); an emulator's tab
             # closes the emulator (CEmu saves its state); a tool's tab closes the tool
@@ -1621,36 +1654,175 @@ class App(object):
         fps.pack(side="left", padx=(8, 0))
         line = tk.Frame(f, bg=th.PANEL, height=2)
         line.pack(fill="x", side="bottom")
+        # Click: shows the tab; drag it left or right: moves it (All screens stays first)
         for w in (f, inner, dot, name, fps):
-            w.bind("<Button-1>", lambda e, k=key: self.show_tab(k))
-        self.tab_widgets[key] = dict(frame=f, dot=dot, name=name, fps=fps, line=line, inner=inner)
+            w.bind("<ButtonPress-1>", lambda e, k=key: self.tab_press(k, e))
+            w.bind("<B1-Motion>", lambda e, k=key: self.tab_motion(k, e))
+            w.bind("<ButtonRelease-1>", lambda e, k=key: self.tab_release(k, e))
+            w.bind("<MouseWheel>", lambda e: self.scroll_tabs(-1 if e.delta > 0 else 1))
+        tip = th.Tooltip(f, "", below=True)
+        self.tab_widgets[key] = dict(frame=f, dot=dot, name=name, fps=fps, line=line, inner=inner,
+                                     full=text, tip=tip, shut=shut)
+        self.set_tab_title(key, text)
+        # Its place: where the user dragged it to last time; the calculators otherwise in the
+        # order Nspire, 84, 89; anything else last
+        order = [k for k in self.tab_order if k in self.tab_widgets and k != key]
+        names = [self.tab_name(k) for k in order]
+        mine = self.tab_name(key)
+        saved = self.saved_order if mine in self.saved_order else ["all"] + [c.slug for c in CALCS]
+        pos = 0 if key == wc.FIRST else wc.insert_at(names, mine, saved)
+        self.tab_order = order[:pos] + [key] + order[pos:]
+        f.bind("<Destroy>", lambda e, w=f: e.widget is w and self.fit_tabs_soon(), add="+")
+        self.pack_tabs()
         self.fit_tabs_soon()
+
+    def set_tab_title(self, key, text):
+        """The tab's title: a tool's short form ("Compare: TI-84 Plus CE"), cut with "…" to the
+        tabs' width now (whole letters), the full title in its tooltip when it's shortened"""
+        w = self.tab_widgets.get(key)
+        if w is None:
+            return
+        w["full"] = text
+        short = wc.short_title(text) if tool_tabs.is_tool_key(key) else text
+        try:
+            scale = max(1.0, float(self.root.winfo_fpixels("1i")) / 96.0)
+            font = tkfont.Font(root=self.root, font=w["name"].cget("font"))
+            shown = wc.ellipsize(short, int(self.tab_limit * scale), font.measure)
+        except (tk.TclError, ValueError):
+            shown = short
+        w["name"].configure(text=shown)
+        w["tip"].text = text if shown != text else ""
+
+    def tab_keys(self):
+        """The tabs in the strip's order (the ones still open)"""
+        self.tab_order = [k for k in self.tab_order if k in self.tab_widgets]
+        for k in self.tab_widgets:  # Never lose one
+            if k not in self.tab_order:
+                self.tab_order.append(k)
+        return self.tab_order
+
+    def pack_tabs(self, window=None):
+        """The tab buttons in order; window=(start, end): only those (and All screens) shown,
+        with ‹ › to scroll to the others"""
+        keys = self.tab_keys()
+        start, end = window or (0, len(keys))
+        for k in keys:
+            self.tab_widgets[k]["frame"].pack_forget()
+        self.tab_left.pack_forget()
+        self.tab_right.pack_forget()
+        for i, k in enumerate(keys):
+            if i == 0 or start <= i < end:
+                self.tab_widgets[k]["frame"].pack(side="left")
+        if window and (start > 1 or end < len(keys)):
+            self.tab_left.configure(fg=th.FG if start > 1 else th.GREY)
+            self.tab_right.configure(fg=th.FG if end < len(keys) else th.GREY)
+            self.tab_left.pack(side="left", after=self.tab_widgets[keys[0]]["frame"])
+            self.tab_right.pack(side="left")
+        self.tab_window = (start, end)
+
+    def scroll_tabs(self, step):
+        """‹ / › (or the wheel over the tabs): the run of tabs shown moves by one"""
+        start, end = self.tab_window
+        n = len(self.tab_keys())
+        if (start <= 1 and end >= n) or (step < 0 and start <= 1) or (step > 0 and end >= n):
+            return
+        self.tab_first = start + step
+        self.fit_tabs(scrolled=True)
 
     def fit_tabs_soon(self):
         if getattr(self, "fit_tabs_job", None) is None:
             self.fit_tabs_job = self.root.after(30, self.fit_tabs)
 
-    def fit_tabs(self):
+    def fit_tabs(self, scrolled=False):
         """Many tabs in a narrow window: the tabs not shown lose their status text ("connecting",
-        the frame rate) and some padding, so the shown one always stays in sight"""
+        the frame rate) and some padding, then the titles get shorter (with "…"), then the strip
+        shows a run of whole tabs with ‹ › to scroll (the shown one always in sight). Write a
+        program and Open in its own window always keep their place."""
         self.fit_tabs_job = None
         try:
-            avail = self.root.winfo_width() - self.pop_btn.winfo_reqwidth() - 24
+            avail = (self.root.winfo_width() - self.pop_btn.winfo_reqwidth() -
+                     self.write_btn.winfo_reqwidth() - 40)
             if avail <= 100:
                 return
-            for compact in (False, True):
-                for k, w in self.tab_widgets.items():
+            keys = self.tab_keys()
+            self.pack_tabs()
+            steps = [(False, self.TAB_MAX)] + [(True, lim) for lim in
+                                               range(self.TAB_MAX, self.TAB_MIN - 1, -15)]
+            ws = []
+            for compact, limit in steps:
+                for k in keys:
+                    w = self.tab_widgets[k]
                     hide = compact and k != self.current
                     w["inner"].pack_configure(padx=8 if compact else 14)
                     if hide and w["fps"].winfo_manager():
                         w["fps"].pack_forget()
                     elif not hide and not w["fps"].winfo_manager():
                         w["fps"].pack(side="left", padx=(8, 0), after=w["name"])
+                if limit != self.tab_limit:
+                    self.tab_limit = limit
+                    for k in keys:
+                        self.set_tab_title(k, self.tab_widgets[k]["full"])
                 self.strip.update_idletasks()
-                if sum(w["frame"].winfo_reqwidth() for w in self.tab_widgets.values()) <= avail:
-                    break
+                ws = [self.tab_widgets[k]["frame"].winfo_reqwidth() for k in keys]
+                if sum(ws) <= avail:
+                    self.tab_first = 1
+                    return
+            arrows = self.tab_left.winfo_reqwidth() + self.tab_right.winfo_reqwidth()
+            cur = keys.index(self.current) if self.current in keys else None
+            self.pack_tabs(wc.visible_window(ws, None if scrolled else cur, avail - arrows,
+                                             getattr(self, "tab_first", 1)))
+            self.tab_first = self.tab_window[0]
         except tk.TclError:
             pass
+
+    # ---- Dragging a tab to a new place ----
+    def tab_press(self, key, ev):
+        self.drag = dict(key=key, x=ev.x_root, moving=False, index=None, others=[])
+        self.show_tab(key)
+
+    def tab_motion(self, key, ev):
+        d = getattr(self, "drag", None)
+        if not d or d["key"] != key or key == wc.FIRST:
+            return
+        if not d["moving"]:
+            if abs(ev.x_root - d["x"]) < self.DRAG:
+                return
+            d["moving"] = True
+            self.root.configure(cursor="sb_h_double_arrow")
+            self.tab_widgets[key]["line"].configure(bg=th.FG)
+        others = [k for k in self.tab_keys() if k not in (key, wc.FIRST) and
+                  self.tab_widgets[k]["frame"].winfo_manager()]
+        edges = []
+        for k in others:
+            fr = self.tab_widgets[k]["frame"]
+            edges.append((fr.winfo_rootx(), fr.winfo_rootx() + fr.winfo_width()))
+        if not edges:
+            return
+        i = wc.drop_index(edges, ev.x_root)
+        d["index"], d["others"] = i, others
+        # The drop marker: an accent bar in the gap the tab would land in
+        x = (edges[i][0] if i < len(edges) else edges[-1][1]) - self.strip.winfo_rootx()
+        h = self.strip.winfo_height()
+        self.drop_mark.place(in_=self.strip, x=max(0, x - 2), y=4, width=3, height=max(4, h - 8))
+        self.drop_mark.lift()
+
+    def tab_release(self, key, ev):
+        d, self.drag = getattr(self, "drag", None), None
+        if not d or not d["moving"]:
+            return
+        self.drop_mark.place_forget()
+        self.root.configure(cursor="")
+        if d["index"] is not None:
+            self.move_tab(key, wc.target_index(self.tab_keys(), key, d["others"], d["index"]))
+        self.show_tab(key)  # Its line back to the accent
+
+    def move_tab(self, key, index):
+        """Moves a tab to index (counted without it; All screens stays first) and keeps the
+        order for next time (CalcSuite files/settings/tab_order.json)"""
+        self.tab_order = wc.move(self.tab_keys(), key, index)
+        self.saved_order = wc.merge_saved(self.saved_order, [self.tab_name(k) for k in self.tab_order])
+        wc.save_order(self.saved_order)
+        self.fit_tabs()
 
     def show_tab(self, key):
         if key != "all" and key in self.tabs and self.tabs[key].popped:
@@ -1879,9 +2051,9 @@ class App(object):
         return panel
 
     def tool_title(self, key, text):
-        w = self.tab_widgets.get(key)
-        if w:
-            w["name"].configure(text=text)
+        if key in self.tab_widgets:
+            self.set_tab_title(key, text)
+            self.fit_tabs_soon()
         t = self.tools.get(key)
         if t is not None and t.popped:
             self.root.tk.call("wm", "title", t._w, "%s - %s" % (text, APP_NAME))
@@ -2063,11 +2235,7 @@ class App(object):
     def add(self, calc):
         m = Mirror(self, calc)
         self.mirrors[calc.pid] = m
-        self.make_tab_button(calc.pid, calc.title)
-        # Tabs in a fixed order: Nspire, 84, 89
-        for pid in sorted(self.tab_widgets, key=lambda k: -1 if k == "all" else self.order(k)):
-            self.tab_widgets[pid]["frame"].pack_forget()
-            self.tab_widgets[pid]["frame"].pack(side="left")
+        self.make_tab_button(calc.pid, calc.title)  # In the order the user dragged them to last
         self.tabs[calc.pid] = Tab(self, m)
         self.all.add(m)
         if self.editor is not None:  # The editor's Send targets follow

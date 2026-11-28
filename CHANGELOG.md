@@ -2,6 +2,27 @@
 
 What changed in the kit, newest first. Tested on a TI-Nspire CX II CAS, OS 6.40, Windows 11.
 
+## [Unreleased]
+
+### Changed
+
+- **Drag tabs to rearrange them.** Drag a tab left or right (calculators, tools, PC copies, the
+  editor; All screens stays first): an orange bar shows where it lands, a plain click still
+  just opens it. The order is kept in `CalcSuite files/settings/tab_order.json` for next time.
+- **Tab titles fit.** Tool tabs get short titles ("Compare: TI-84 Plus CE", "Picture: TI-89
+  Titanium"), cut with "…" at whole letters when long, the full title in a tooltip. Many tabs
+  first lose their status text, then get shorter, then the strip scrolls with **‹ ›** (or the
+  mouse wheel); **Write a program** and **Open in its own window** always keep their place.
+- **Bigger live screens.** A calculator's screen fills its side with a ~24 px margin: a whole
+  number of times when that fills most of it, else in half steps (x 2.5, x 4.5); the side panel
+  gives up width when that lets the screen be bigger (the TI-89 at 1600 px: x 6 instead of a
+  small picture in a black box). All screens' tiles too.
+- **Smooth side strip icons.** The panel's icons are drawn antialiased for the screen's scale
+  (crisp at 100%, 150% and 200%), not as jagged Canvas lines.
+- **App icon:** the original design is back (the monitor with the orange calculator and its
+  screen), with 16, 20, 24 and 32 px laid out on whole pixels (not fuzzy) and every part a
+  pixel inside the tile (it looked cut off at the corner).
+
 ## [1.0.3] - 2026-11-28
 
 ### Added

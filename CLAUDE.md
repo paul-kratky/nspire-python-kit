@@ -17,6 +17,7 @@ PDF ships in the release); CHANGELOG.md says what changed.
 | --- | --- |
 | `tools/mirror.py` | The app: `App` (the window, tab strip, USB scan, the message pump), `Mirror` (one calculator's link thread), `Tab`, `AllScreens` |
 | `tools/ui_panels.py` | The side panel (an icon strip on the right edge): Files, Keys, Symbols, Functions, Data, Get programs, Macros, Guide, Calculator info |
+| `tools/window_chrome.py` | The window's pure parts: the live screen's scale, tab titles, the tab order (dragging, saved in `settings/tab_order.json`), which tabs fit |
 | `tools/tool_tabs.py` | Tools as closable tabs of the main window (`App.open_tool_tab`; `tool_tabs.window()` for tools written as windows) |
 | `tools/editor.py`, `tools/code_check.py` | The Program editor (a tab of the main window; `python tools/editor.py` opens it alone) and its strict checkers |
 | `tools/calc_manager.py` | Files, backup/restore, Calculator info (clock, OS check, Exit Press-to-Test, Delete all programs, Reset) |
